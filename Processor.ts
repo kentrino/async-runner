@@ -1,4 +1,5 @@
 import { isSubsetOf } from "./isSubsetOf";
+import EventEmitter from "events"
 
 type AnyAsyncFunction1 = (args: never) => Promise<unknown>
 type Registry = Record<string, AnyAsyncFunction1>
@@ -16,10 +17,19 @@ type ProcessorResult<T extends Registry> =  {
   [K in keyof T]: AsyncReturnType<T[K]>
 }
 
+const PROCESS = "process"
+const FINISH = "finish"
+
+type EventMap<T extends Registry> = {
+  [PROCESS]: never[]
+  [FINISH]: ProcessorResult<T>[]
+}
+
 export class Processor<T extends Registry> {
-  unprocessed: Partial<T>
-  result: Partial<ProcessorResult<T>> = {}
-  deps: DependencySet<T>
+  private result: Partial<ProcessorResult<T>> = {}
+  private readonly deps: Readonly<DependencySet<T>>
+  private readonly ev = new EventEmitter<EventMap<T>>()
+  private readonly started: Set<keyof T> = new Set()
 
   constructor(
     private fns: T,
@@ -31,47 +41,49 @@ export class Processor<T extends Registry> {
         ...acc
       }
     }, {} as DependencySet<T>)
-    this.unprocessed = fns
   }
 
   async run(): Promise<ProcessorResult<T>> {
-    while (!this.allProcessed()) {
-      const canProcess = this.listCanProcess()
-      await mapValuesAsync(canProcess, async (_, key: keyof T) => {
-        const fn = this.fns[key]
-        this.result[key] = await fn(this.result as never) as never
-        delete this.unprocessed[key]
+    const promise = new Promise<ProcessorResult<T>>((resolve) => {
+      this.ev.on(PROCESS, () => {
+        this.tick()
       })
-    }
-    return this.result as never
+      this.ev.on(FINISH, (result) => resolve(result))
+    })
+    this.ev.emit(PROCESS)
+    return await promise
   }
 
-  private listCanProcess(): Partial<T> {
-    const resolved = new Set(Object.keys(this.result))
-    return filterValue(this.unprocessed, (_, key) => {
-      const deps = this.deps[key]
-      return isSubsetOf(deps, resolved)
+  tick() {
+    this.notStarted().map(async (k) => {
+      await this.one(k)
+      if (this.allProcessed()) {
+        this.ev.emit(FINISH, this.result as never)
+      }
     })
   }
 
-  private allProcessed() {
-    return Object.keys(this.unprocessed).length === 0
+  async one(key: keyof T): Promise<void> {
+    if (this.started.has(key)) {
+      return
+    }
+    const resolved = new Set(Object.keys(this.result))
+    const deps = this.deps[key]
+    if (isSubsetOf(deps, resolved)) {
+      const fn = this.fns[key]
+      this.started.add(key)
+      // FIXME: pick
+      this.result[key] = await fn(this.result as never) as never
+      this.ev.emit(PROCESS)
+    }
+    return
   }
-}
 
-async function mapAsync<T, U>(array: T[], fn: (item: T) => Promise<U>): Promise<U[]> {
-  return Promise.all(array.map(fn))
-}
+  private notStarted() {
+    return Object.keys(this.fns).filter((k) => !this.started.has(k))
+  }
 
-async function mapValuesAsync<T extends Record<keyof any, any>, R>(
-  obj: T,
-  fn: (item: T[keyof T], key: string) => Promise<R>,
-): Promise<{ [K in keyof T]: R }> {
-  return Object.fromEntries(await mapAsync(Object.entries(obj), async ([k, v]) => {
-    return [k, await fn(v, k)]
-  })) as never
-}
-
-function filterValue<T extends Record<keyof any, any>>(obj: T, fn: (item: T[keyof T], key: keyof T) => boolean): Partial<T> {
-  return Object.fromEntries(Object.entries(obj).filter(([k, v]) => fn(v, k))) as never
+  private allProcessed() {
+    return Object.entries(this.result).length === Object.keys(this.fns).length
+  }
 }
