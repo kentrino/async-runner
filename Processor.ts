@@ -35,7 +35,7 @@ export class Processor<T extends Registry> {
   }
 
   async run(): Promise<ProcessorResult<T>> {
-    while (!this.allResolved()) {
+    while (!this.allProcessed()) {
       const canProcess = this.listCanProcess()
       await mapValuesAsync(canProcess, async (_, key: keyof T) => {
         const fn = this.fns[key]
@@ -46,7 +46,7 @@ export class Processor<T extends Registry> {
     return this.result as never
   }
 
-  listCanProcess(): Partial<T> {
+  private listCanProcess(): Partial<T> {
     const resolved = new Set(Object.keys(this.result))
     return filterValue(this.unprocessed, (_, key) => {
       const deps = this.deps[key]
@@ -54,16 +54,16 @@ export class Processor<T extends Registry> {
     })
   }
 
-  allResolved() {
+  private allProcessed() {
     return Object.keys(this.unprocessed).length === 0
   }
 }
 
-export async function mapAsync<T, U>(array: T[], fn: (item: T) => Promise<U>): Promise<U[]> {
+async function mapAsync<T, U>(array: T[], fn: (item: T) => Promise<U>): Promise<U[]> {
   return Promise.all(array.map(fn))
 }
 
-export async function mapValuesAsync<T extends Record<keyof any, any>, R>(
+async function mapValuesAsync<T extends Record<keyof any, any>, R>(
   obj: T,
   fn: (item: T[keyof T], key: string) => Promise<R>,
 ): Promise<{ [K in keyof T]: R }> {
